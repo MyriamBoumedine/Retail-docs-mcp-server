@@ -1,0 +1,11 @@
+# Base vectorielle générée par ingest.py — régénérable, ne pas versionner
+chroma_db/
+
+# Environnements virtuels Python
+venv/
+.venv/
+__pycache__/
+*.pyc
+
+# Fichiers d'environnement (si tu ajoutes des clés plus tard)
+.env
