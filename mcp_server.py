@@ -16,6 +16,7 @@ pas à la main) :
 import os
 import chromadb
 from mcp.server.fastmcp import FastMCP
+from databricks import sql as databricks_sql
 
 # Chemin basé sur l'emplacement du script, pas sur le dossier de lancement :
 # Claude Desktop lance ce script depuis un dossier différent du tien.
@@ -23,6 +24,11 @@ SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 DB_DIR = os.path.join(SCRIPT_DIR, "chroma_db")
 COLLECTION_NAME = "retail_project_docs"
 TOP_K = 4
+
+# Connexion Databricks — lues depuis des variables d'environnement, JAMAIS en dur ici
+DATABRICKS_SERVER_HOSTNAME = os.environ.get("DATABRICKS_SERVER_HOSTNAME")
+DATABRICKS_HTTP_PATH = os.environ.get("DATABRICKS_HTTP_PATH")
+DATABRICKS_TOKEN = os.environ.get("DATABRICKS_TOKEN")
 
 # Le nom "retail-docs" apparaîtra dans Claude Desktop/Code comme identifiant du serveur
 mcp = FastMCP("retail-docs")
@@ -65,6 +71,75 @@ def search_retail_docs(question: str) -> str:
         for doc, meta in zip(docs, metas)
     ]
     return "\n\n---\n\n".join(blocks)
+
+
+CATALOG_SCHEMA = "workspace.retail_project"
+
+
+@mcp.tool()
+def query_gold_table(sql: str) -> str:
+    """
+    Exécute une requête SQL en lecture (SELECT uniquement) sur les tables
+    Gold du projet Databricks retail de Myriam, pour répondre à des
+    questions chiffrées (chiffre d'affaires, nombre de transactions...).
+
+    Utilise cet outil quand la question porte sur des CHIFFRES RÉELS
+    (montants, totaux, comparaisons) plutôt que sur le fonctionnement du
+    pipeline (pour ça, utilise search_retail_docs à la place).
+
+    Tables disponibles (catalogue workspace.retail_project) :
+    - gold_sales_daily(day, revenue, nb_transactions)
+        CA total par jour
+    - gold_sales_by_store(store, region, revenue, avg_basket)
+        CA par magasin/région + panier moyen
+    - gold_sales_by_category(category, revenue, avg_basket)
+        CA par catégorie de produit + panier moyen
+
+    Écris toujours le nom de table complet, par exemple :
+    SELECT * FROM workspace.retail_project.gold_sales_by_store LIMIT 10
+
+    Args:
+        sql: une requête SQL SELECT (lecture uniquement)
+
+    Returns:
+        Le résultat de la requête, formaté en texte, ou un message d'erreur.
+    """
+    if not sql.strip().lower().startswith("select"):
+        return (
+            "Requête refusée : seules les requêtes SELECT (lecture) sont "
+            "autorisées par cet outil, par sécurité."
+        )
+
+    if not all([DATABRICKS_SERVER_HOSTNAME, DATABRICKS_HTTP_PATH, DATABRICKS_TOKEN]):
+        return (
+            "Connexion Databricks non configurée. Variables d'environnement "
+            "requises : DATABRICKS_SERVER_HOSTNAME, DATABRICKS_HTTP_PATH, "
+            "DATABRICKS_TOKEN."
+        )
+
+    try:
+        with databricks_sql.connect(
+            server_hostname=DATABRICKS_SERVER_HOSTNAME,
+            http_path=DATABRICKS_HTTP_PATH,
+            access_token=DATABRICKS_TOKEN,
+        ) as connection:
+            with connection.cursor() as cursor:
+                cursor.execute(sql)
+                columns = [desc[0] for desc in cursor.description]
+                rows = cursor.fetchall()
+    except Exception as e:
+        return f"Erreur lors de l'exécution de la requête : {e}"
+
+    if not rows:
+        return "La requête n'a renvoyé aucune ligne."
+
+    header = " | ".join(columns)
+    separator = "-" * len(header)
+    lines = [header, separator]
+    for row in rows:
+        lines.append(" | ".join(str(v) for v in row))
+
+    return "\n".join(lines)
 
 
 if __name__ == "__main__":
